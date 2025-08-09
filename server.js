@@ -68,13 +68,8 @@ io.on("connection", socket => {
 
   // CREATE ROOM
   socket.on("createRoom", (data, cb) => {
-    console.log("createRoom event received:", data);
-
     try {
-      if (typeof cb !== "function") {
-        console.warn("createRoom callback missing or not a function");
-        return;
-      }
+      if (typeof cb !== "function") return;
 
       if (!data || !data.name || typeof data.name !== "string" || !data.name.trim()) {
         return cb({ ok: false, error: "Invalid name" });
@@ -120,6 +115,8 @@ io.on("connection", socket => {
 
   // JOIN ROOM
   socket.on("joinRoom", (data, cb) => {
+    if (!data || !data.room || !data.name) return cb({ ok: false, error: "Invalid data" });
+
     const room = rooms[data.room];
     if (!room) return cb({ ok: false, error: "Room not found" });
 
@@ -295,6 +292,7 @@ io.on("connection", socket => {
       candidateWords: room.candidateWords
     });
 
+    // Auto pick word after 30 seconds
     room.pickTimer = setTimeout(() => {
       if (!room.currentWord) {
         const pick = room.candidateWords[Math.floor(Math.random() * room.candidateWords.length)];
@@ -307,24 +305,13 @@ io.on("connection", socket => {
   function chooseWord(roomCode, word) {
     const room = rooms[roomCode];
     if (!room) return;
-
     room.currentWord = word;
+    io.to(roomCode).emit("yourWord", word);
+    io.to(roomCode).emit("roundStarted", { drawerId: room.drawerId, drawerName: room.players.find(p => p.id === room.drawerId)?.name });
+
+    // Start timer countdown
     room.timeLeft = room.settings.roundTime;
-
-    const drawerSocket = io.sockets.sockets.get(room.drawerId);
-    if (drawerSocket) {
-      drawerSocket.emit("yourWord", word);
-    }
-
-    io.to(roomCode).emit("roundStarted", {
-      drawerId: room.drawerId,
-      drawerName: room.players.find(p => p.id === room.drawerId)?.name
-    });
-
-    if (room.timerId) {
-      clearInterval(room.timerId);
-      room.timerId = null;
-    }
+    io.to(roomCode).emit("time", room.timeLeft);
 
     room.timerId = setInterval(() => {
       room.timeLeft--;
