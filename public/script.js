@@ -242,7 +242,6 @@ socket.on('roomState', (state) => {
   // show host UI & fill custom words if host
   if (hostId === myId) {
     settingsBtn.classList.remove('hidden');
-    // prefill customWords if available
     if (state.settings.customWords && state.settings.customWords.length) {
       customWordsTextarea.value = state.settings.customWords.join(', ');
     }
@@ -341,11 +340,8 @@ saveSettingsBtn.addEventListener('click', () => {
     category: setCategory.value
   };
   socket.emit('updateSettings', settings);
-  // also send custom words
   const customText = customWordsTextarea.value.trim();
-  socket.emit('setCustomWords', customText, (res) => {
-    // optional callback
-  });
+  socket.emit('setCustomWords', customText, (res) => {});
   settingsModal.classList.add('hidden');
 });
 
