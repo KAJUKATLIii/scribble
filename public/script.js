@@ -354,3 +354,51 @@ socket.on('connect', () => { myId = socket.id; });
 
 // helper
 function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+
+// === FIX: Prevent pick-a-word-after-30s glitch ===
+let chooseWordTimeout; // global timer reference
+
+socket.off('roundPrestart'); // remove old handler if exists
+socket.on('roundPrestart', (info) => {
+  drawerId = info.drawerId;
+  localStrokes = [];
+  redrawAll();
+
+  if (drawerId === myId) {
+    candidateList.innerHTML = '';
+    info.candidateWords.forEach(w => {
+      const btn = document.createElement('button');
+      btn.textContent = w;
+      btn.addEventListener('click', () => {
+        clearTimeout(chooseWordTimeout); // stop auto-pick
+        socket.emit('chooseWord', { word: w });
+        chooseModal.classList.add('hidden');
+      });
+      candidateList.appendChild(btn);
+    });
+    chooseModal.classList.remove('hidden');
+
+    chooseWordTimeout = setTimeout(() => {
+      if (!chooseModal.classList.contains('hidden')) {
+        const pick = info.candidateWords[Math.floor(Math.random() * info.candidateWords.length)];
+        socket.emit('chooseWord', { word: pick });
+        chooseModal.classList.add('hidden');
+      }
+    }, 30000);
+  } else {
+    wordBox.textContent = `${info.drawerName} is choosing a word...`;
+  }
+});
+
+socket.off('roundStarted'); // remove old handler if exists
+socket.on('roundStarted', (info) => {
+  clearTimeout(chooseWordTimeout); // ensure no delayed pick
+  drawerId = info.drawerId;
+  localStrokes = [];
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (drawerId === myId) wordBox.textContent = `You are drawing`;
+  else wordBox.textContent = `${info.drawerName} is drawing`;
+});
+// === END FIX ===
+
