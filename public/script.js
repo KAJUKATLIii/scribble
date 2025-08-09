@@ -1,4 +1,4 @@
-// public/script.js
+// === FIXED script.js ===
 const socket = io();
 
 // --- elements ---
@@ -56,7 +56,7 @@ let brushSize = 4;
 let brushColor = '#000';
 let isEraser = false;
 
-// canvas sizing
+// === Canvas Resize ===
 function resizeCanvas(){
   const wrap = document.querySelector('.canvasWrap');
   canvas.width = Math.max(300, wrap.clientWidth - 32);
@@ -67,7 +67,7 @@ window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 function drawStrokeOnCtx(stroke){
-  if(!stroke || !stroke.points || stroke.points.length === 0) return;
+  if(!stroke?.points?.length) return;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = stroke.color;
@@ -90,7 +90,7 @@ function redrawAll(){
   for(const s of localStrokes) drawStrokeOnCtx(s);
 }
 
-// pointer events
+// === Drawing Events ===
 canvas.addEventListener('pointerdown', (e)=>{
   if(drawerId !== myId) return;
   isDrawing = true;
@@ -99,7 +99,6 @@ canvas.addEventListener('pointerdown', (e)=>{
   const y = e.clientY - rect.top;
   currentStroke = { id: 's_' + Date.now() + '_' + Math.random().toString(36).slice(2,7), points: [{x,y}], color: isEraser ? '#ffffff' : brushColor, size: brushSize };
 });
-
 canvas.addEventListener('pointermove', (e)=>{
   if(!isDrawing || !currentStroke) return;
   const rect = canvas.getBoundingClientRect();
@@ -109,8 +108,7 @@ canvas.addEventListener('pointermove', (e)=>{
   redrawAll();
   drawStrokeOnCtx(currentStroke);
 });
-
-window.addEventListener('pointerup', (e)=>{
+window.addEventListener('pointerup', ()=>{
   if(!isDrawing || !currentStroke) return;
   localStrokes.push(currentStroke);
   socket.emit('stroke', currentStroke);
@@ -119,24 +117,22 @@ window.addEventListener('pointerup', (e)=>{
   redrawAll();
 });
 
-// incoming stroke
+// === Incoming strokes ===
 socket.on('stroke', (stroke) => {
   localStrokes.push(stroke);
   drawStrokeOnCtx(stroke);
 });
 
-// undo
+// Undo
 undoBtn.addEventListener('click', () => {
   if(drawerId !== myId) return;
   socket.emit('undo');
   localStrokes.pop();
   redrawAll();
 });
-socket.on('undo', ({ strokeId }) => {
-  socket.emit('requestReplay');
-});
+socket.on('undo', () => socket.emit('requestReplay'));
 
-// replay
+// Replay
 replayBtn.addEventListener('click', () => socket.emit('requestReplay'));
 socket.on('replayData', (strokes) => {
   ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -150,7 +146,7 @@ socket.on('replayData', (strokes) => {
   step();
 });
 
-// load last saved round
+// Load Last Saved Round
 loadLastSavedBtn.addEventListener('click', () => {
   if(!currentRoom) return alert('Not in room');
   fetch(`/rounds/${currentRoom}/last`).then(r => r.json()).then(j => {
@@ -165,15 +161,15 @@ loadLastSavedBtn.addEventListener('click', () => {
       setTimeout(step, 150);
     }
     step();
-  }).catch(err => alert('Failed to load'));
+  }).catch(() => alert('Failed to load'));
 });
 
-// toolbar
+// Toolbar
 brushRange.addEventListener('input', () => brushSize = Number(brushRange.value));
 colorPicker.addEventListener('input', () => { brushColor = colorPicker.value; isEraser = false; });
 eraserBtn.addEventListener('click', () => { isEraser = true; });
 
-// room UI
+// Enter Room
 function enterRoom(room, name) {
   currentRoom = room;
   myName = name;
@@ -186,22 +182,21 @@ createRoomBtn.addEventListener('click', () => {
   const name = nameInput.value.trim() || 'Player';
   const custom = customWordsTextarea.value.trim();
   socket.emit('createRoom', { name, maxRounds: 8, roundTime: 60, customWords: custom }, (res) => {
-    if (res && res.ok) enterRoom(res.room, name);
+    if (res?.ok) enterRoom(res.room, name);
     else alert('Failed to create');
   });
 });
-
 joinRoomBtn.addEventListener('click', () => {
   const name = nameInput.value.trim() || 'Player';
   const room = roomCodeInput.value.trim().toUpperCase();
   if (!room) return alert('Enter room code');
   socket.emit('joinRoom', { name, room }, (res) => {
-    if (res && res.ok) enterRoom(res.room, name);
-    else alert(res && res.error ? res.error : 'Failed to join');
+    if (res?.ok) enterRoom(res.room, name);
+    else alert(res?.error || 'Failed to join');
   });
 });
 
-// chat
+// Chat
 chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const text = chatInput.value.trim();
@@ -218,7 +213,7 @@ socket.on('systemMessage', (msg) => {
   chatLog.appendChild(div); chatLog.scrollTop = chatLog.scrollHeight;
 });
 
-// roomState
+// Room State
 socket.on('roomState', (state) => {
   playersList.innerHTML = '';
   state.players.forEach(p => {
@@ -230,7 +225,8 @@ socket.on('roomState', (state) => {
       li.appendChild(kb);
     }
     if (state.hostId === p.id) {
-      const hostTag = document.createElement('span'); hostTag.textContent = ' (host)'; hostTag.style.fontWeight = '700'; li.appendChild(hostTag);
+      const hostTag = document.createElement('span'); hostTag.textContent = ' (host)'; hostTag.style.fontWeight = '700';
+      li.appendChild(hostTag);
     }
     playersList.appendChild(li);
   });
@@ -239,146 +235,33 @@ socket.on('roomState', (state) => {
   document.getElementById('roundInfo').textContent = `${state.roundNumber || 0}/${state.maxRounds || 0}`;
   document.getElementById('time').textContent = state.timeLeft || 0;
   document.getElementById('langCat').textContent = `${state.settings.language}/${state.settings.category}`;
-  // show host UI & fill custom words if host
   if (hostId === myId) {
     settingsBtn.classList.remove('hidden');
-    // prefill customWords if available
-    if (state.settings.customWords && state.settings.customWords.length) {
+    if (state.settings.customWords?.length) {
       customWordsTextarea.value = state.settings.customWords.join(', ');
     }
   } else settingsBtn.classList.add('hidden');
 });
 
-// round prestart
+// === FIXED: Pick-a-word timeout ===
+let chooseWordTimeout;
 socket.on('roundPrestart', (info) => {
   drawerId = info.drawerId;
   localStrokes = [];
   redrawAll();
-  if (drawerId === myId) {
-    candidateList.innerHTML = '';
-    info.candidateWords.forEach(w => {
-      const btn = document.createElement('button'); btn.textContent = w;
-      btn.addEventListener('click', () => {
-        socket.emit('chooseWord', { word: w });
-        chooseModal.classList.add('hidden');
-      });
-      candidateList.appendChild(btn);
-    });
-    chooseModal.classList.remove('hidden');
-    setTimeout(() => {
-      if (!chooseModal.classList.contains('hidden')) {
-        const pick = info.candidateWords[Math.floor(Math.random() * info.candidateWords.length)];
-        socket.emit('chooseWord', { word: pick });
-        chooseModal.classList.add('hidden');
-      }
-    }, 30000);
-  } else {
-    wordBox.textContent = `${info.drawerName} is choosing a word...`;
-  }
-});
-
-// chooseWords (redundant handler)
-socket.on('chooseWords', (candidates) => {
-  candidateList.innerHTML = '';
-  candidates.forEach(w => {
-    const btn = document.createElement('button'); btn.textContent = w;
-    btn.addEventListener('click', () => {
-      socket.emit('chooseWord', { word: w });
-      chooseModal.classList.add('hidden');
-    });
-    candidateList.appendChild(btn);
-  });
-  chooseModal.classList.remove('hidden');
-});
-
-// yourWord
-socket.on('yourWord', (w) => {
-  myWord = w;
-  wordBox.textContent = `Your word: ${w}`;
-});
-
-// roundStarted
-socket.on('roundStarted', (info) => {
-  drawerId = info.drawerId;
-  localStrokes = [];
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (drawerId === myId) wordBox.textContent = `You are drawing`;
-  else wordBox.textContent = `${info.drawerName} is drawing`;
-});
-
-// time updates
-socket.on('time', (t) => {
-  document.getElementById('time').textContent = t;
-  wordBox.textContent = wordBox.textContent.split(' | ')[0] + ` | ${t}s`;
-});
-
-// roundEnded
-socket.on('roundEnded', (data) => {
-  wordBox.textContent = `Round ended. Word: ${data.word || '—'}`;
-  myWord = null;
-});
-
-// gameOver
-socket.on('gameOver', (data) => {
-  alert('Game over!\n' + data.players.map(p => `${p.name}: ${p.score}`).join('\n'));
-});
-
-// kicked
-socket.on('kicked', ({ reason }) => { alert('You were kicked: ' + (reason || 'by host')); location.reload(); });
-
-// start/pause
-startBtn.addEventListener('click', () => socket.emit('startGame'));
-pauseBtn.addEventListener('click', () => socket.emit('pauseGame'));
-
-// settings modal
-settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
-cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
-saveSettingsBtn.addEventListener('click', () => {
-  const settings = {
-    roundTime: Number(setRoundTime.value),
-    maxRounds: Number(setMaxRounds.value),
-    language: setLanguage.value,
-    category: setCategory.value
-  };
-  socket.emit('updateSettings', settings);
-  // also send custom words
-  const customText = customWordsTextarea.value.trim();
-  socket.emit('setCustomWords', customText, (res) => {
-    // optional callback
-  });
-  settingsModal.classList.add('hidden');
-});
-
-// get socket id
-socket.on('connect', () => { myId = socket.id; });
-
-// helper
-function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-
-
-// === FIX: Prevent pick-a-word-after-30s glitch ===
-let chooseWordTimeout; // global timer reference
-
-socket.off('roundPrestart'); // remove old handler if exists
-socket.on('roundPrestart', (info) => {
-  drawerId = info.drawerId;
-  localStrokes = [];
-  redrawAll();
-
   if (drawerId === myId) {
     candidateList.innerHTML = '';
     info.candidateWords.forEach(w => {
       const btn = document.createElement('button');
       btn.textContent = w;
       btn.addEventListener('click', () => {
-        clearTimeout(chooseWordTimeout); // stop auto-pick
+        clearTimeout(chooseWordTimeout);
         socket.emit('chooseWord', { word: w });
         chooseModal.classList.add('hidden');
       });
       candidateList.appendChild(btn);
     });
     chooseModal.classList.remove('hidden');
-
     chooseWordTimeout = setTimeout(() => {
       if (!chooseModal.classList.contains('hidden')) {
         const pick = info.candidateWords[Math.floor(Math.random() * info.candidateWords.length)];
@@ -390,15 +273,36 @@ socket.on('roundPrestart', (info) => {
     wordBox.textContent = `${info.drawerName} is choosing a word...`;
   }
 });
-
-socket.off('roundStarted'); // remove old handler if exists
 socket.on('roundStarted', (info) => {
-  clearTimeout(chooseWordTimeout); // ensure no delayed pick
+  clearTimeout(chooseWordTimeout);
   drawerId = info.drawerId;
   localStrokes = [];
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (drawerId === myId) wordBox.textContent = `You are drawing`;
-  else wordBox.textContent = `${info.drawerName} is drawing`;
+  wordBox.textContent = drawerId === myId ? `You are drawing` : `${info.drawerName} is drawing`;
 });
-// === END FIX ===
 
+// Other events
+socket.on('yourWord', (w) => { myWord = w; wordBox.textContent = `Your word: ${w}`; });
+socket.on('time', (t) => { document.getElementById('time').textContent = t; wordBox.textContent = wordBox.textContent.split(' | ')[0] + ` | ${t}s`; });
+socket.on('roundEnded', (data) => { wordBox.textContent = `Round ended. Word: ${data.word || '—'}`; myWord = null; });
+socket.on('gameOver', (data) => alert('Game over!\n' + data.players.map(p => `${p.name}: ${p.score}`).join('\n')));
+socket.on('kicked', ({ reason }) => { alert('You were kicked: ' + (reason || 'by host')); location.reload(); });
+
+// Controls
+startBtn.addEventListener('click', () => socket.emit('startGame'));
+pauseBtn.addEventListener('click', () => socket.emit('pauseGame'));
+settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
+cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
+saveSettingsBtn.addEventListener('click', () => {
+  socket.emit('updateSettings', {
+    roundTime: Number(setRoundTime.value),
+    maxRounds: Number(setMaxRounds.value),
+    language: setLanguage.value,
+    category: setCategory.value
+  });
+  socket.emit('setCustomWords', customWordsTextarea.value.trim());
+  settingsModal.classList.add('hidden');
+});
+socket.on('connect', () => { myId = socket.id; });
+
+function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
