@@ -1,121 +1,109 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
+// server.js
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const { v4: uuidv4 } = require("uuid");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
-});
+const io = new Server(server);
 
-app.use(express.static('public'));
+app.use(express.static(__dirname + "/public"));
 
-const PORT = process.env.PORT || 3000;
+const rooms = {};
 
-let rooms = {}; // { roomCode: { hostId, players:[], settings:{}, word, drawerId, roundNumber, ... } }
-
-// ============ Helper functions ============
 function generateRoomCode() {
-  return Math.random().toString(36).substring(2, 6).toUpperCase();
+  return Math.random().toString(36).substr(2, 5).toUpperCase();
 }
 
-function endRound(room) {
-  const r = rooms[room];
-  if (!r) return;
-
-  clearInterval(r.timer);
-  io.to(room).emit('roundEnded', { word: r.word });
-
-  // Prepare for next round
-  setTimeout(() => {
-    if (r.roundNumber >= r.settings.maxRounds) {
-      io.to(room).emit('gameOver', { players: r.players });
-    } else {
-      startRound(room);
+function serializeRoomState(room) {
+  return {
+    hostId: room.hostId,
+    players: room.players.map(p => ({
+      id: p.id,
+      name: p.name,
+      score: p.score
+    })),
+    drawerId: room.drawerId || null,
+    roundNumber: room.roundNumber || 0,
+    maxRounds: room.settings.maxRounds,
+    timeLeft: room.timeLeft || 0,
+    settings: {
+      language: room.settings.language,
+      category: room.settings.category,
+      customWords: room.settings.customWords || []
     }
-  }, 3000);
+  };
 }
 
-function startRound(room) {
-  const r = rooms[room];
-  if (!r) return;
+function endRound(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  io.to(roomCode).emit("roundEnded", { word: room.word });
+  clearInterval(room.timer);
+  room.word = null;
+  setTimeout(() => startRound(roomCode), 3000);
+}
 
-  r.roundNumber++;
-  r.drawerIndex = (r.drawerIndex + 1) % r.players.length;
-  r.drawerId = r.players[r.drawerIndex].id;
-  r.players.forEach(p => p.guessed = false);
+function startRound(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  room.players.forEach(p => (p.guessed = false));
+  room.drawerIndex = (room.drawerIndex + 1) % room.players.length;
+  room.drawerId = room.players[room.drawerIndex].id;
+  room.roundNumber++;
 
   // Pick candidate words
-  let candidates = [];
-  if (r.settings.customWords && r.settings.customWords.length >= 3) {
-    candidates = shuffle([...r.settings.customWords]).slice(0, 3);
-  } else {
-    const pool = getWordPool(r.settings.language, r.settings.category);
-    candidates = shuffle([...pool]).slice(0, 3);
+  const words = room.settings.customWords.length
+    ? room.settings.customWords
+    : ["apple", "banana", "cat", "dog"]; // Replace with Hindi category logic if needed
+
+  const candidateWords = [];
+  while (candidateWords.length < 3) {
+    candidateWords.push(words[Math.floor(Math.random() * words.length)]);
   }
 
-  io.to(room).emit('roundPrestart', {
-    drawerId: r.drawerId,
-    drawerName: r.players.find(p => p.id === r.drawerId).name,
-    candidateWords: candidates
+  io.to(roomCode).emit("roundPrestart", {
+    drawerId: room.drawerId,
+    drawerName: room.players.find(p => p.id === room.drawerId).name,
+    candidateWords
   });
 
-  r.word = null;
-
-  // Wait for word choice
-  r.chooseWordTimeout = setTimeout(() => {
-    if (!r.word) {
-      const autoPick = candidates[Math.floor(Math.random() * candidates.length)];
-      r.word = autoPick;
-      io.to(r.drawerId).emit('yourWord', r.word);
-      io.to(room).emit('roundStarted', {
-        drawerId: r.drawerId,
-        drawerName: r.players.find(p => p.id === r.drawerId).name
-      });
-      startRoundTimer(room);
+  // Auto-pick after 30s
+  room.chooseWordTimeout = setTimeout(() => {
+    if (!room.word) {
+      const pick = candidateWords[Math.floor(Math.random() * candidateWords.length)];
+      chooseWord(roomCode, pick);
     }
   }, 30000);
 }
 
-function startRoundTimer(room) {
-  const r = rooms[room];
-  r.timeLeft = r.settings.roundTime;
-  r.timer = setInterval(() => {
-    r.timeLeft--;
-    io.to(room).emit('time', r.timeLeft);
-    if (r.timeLeft <= 0) {
-      clearInterval(r.timer);
-      endRound(room);
+function chooseWord(roomCode, word) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearTimeout(room.chooseWordTimeout);
+
+  room.word = word;
+  io.to(roomCode).emit("roundStarted", {
+    drawerId: room.drawerId,
+    drawerName: room.players.find(p => p.id === room.drawerId).name
+  });
+  io.to(room.drawerId).emit("yourWord", word);
+
+  room.timeLeft = room.settings.roundTime;
+  room.timer = setInterval(() => {
+    room.timeLeft--;
+    io.to(roomCode).emit("time", room.timeLeft);
+    if (room.timeLeft <= 0) {
+      clearInterval(room.timer);
+      endRound(roomCode);
     }
   }, 1000);
 }
 
-function getWordPool(language, category) {
-  const words = {
-    english: {
-      objects: ['chair', 'bottle', 'computer', 'phone'],
-      animals: ['cat', 'dog', 'elephant', 'tiger'],
-      food: ['pizza', 'burger', 'mango', 'rice']
-    },
-    hindi: {
-      objects: ['kursi', 'botal', 'computer', 'phone'],
-      animals: ['billi', 'kutta', 'hathi', 'sher'],
-      food: ['pizza', 'burger', 'aam', 'chawal']
-    }
-  };
-  return words[language]?.[category] || [];
-}
-
-function shuffle(arr) {
-  return arr.sort(() => Math.random() - 0.5);
-}
-
-// ============ Socket.io ============
-io.on('connection', (socket) => {
-  console.log('User connected', socket.id);
-
-  socket.on('createRoom', ({ name, maxRounds, roundTime, customWords }, cb) => {
+io.on("connection", (socket) => {
+  socket.on("createRoom", ({ name, maxRounds, roundTime, customWords }, cb) => {
     const roomCode = generateRoomCode();
     rooms[roomCode] = {
       hostId: socket.id,
@@ -123,9 +111,9 @@ io.on('connection', (socket) => {
       settings: {
         maxRounds: maxRounds || 8,
         roundTime: roundTime || 60,
-        language: 'english',
-        category: 'objects',
-        customWords: customWords ? customWords.split(',').map(w => w.trim()).filter(Boolean) : []
+        language: "english",
+        category: "objects",
+        customWords: customWords ? customWords.split(",").map(w => w.trim()).filter(Boolean) : []
       },
       roundNumber: 0,
       drawerIndex: -1
@@ -133,118 +121,79 @@ io.on('connection', (socket) => {
     socket.join(roomCode);
     socket.data.room = roomCode;
     cb && cb({ ok: true, room: roomCode });
-    io.to(roomCode).emit('roomState', rooms[roomCode]);
+    io.to(roomCode).emit("roomState", serializeRoomState(rooms[roomCode]));
   });
 
-  socket.on('joinRoom', ({ name, room }, cb) => {
-    const roomCode = String(room || '').toUpperCase();
-    const r = rooms[roomCode];
-    if (!r) return cb && cb({ ok: false, error: 'Room not found' });
-
+  socket.on("joinRoom", ({ name, room }, cb) => {
+    const r = rooms[room];
+    if (!r) return cb({ ok: false, error: "Room not found" });
     r.players.push({ id: socket.id, name, score: 0 });
-    socket.join(roomCode);
-    socket.data.room = roomCode;
-    cb && cb({ ok: true, room: roomCode });
-    io.to(roomCode).emit('roomState', r);
+    socket.join(room);
+    socket.data.room = room;
+    cb({ ok: true, room });
+    io.to(room).emit("roomState", serializeRoomState(r));
   });
 
-  socket.on('chat', (msg) => {
+  socket.on("chat", (msg) => {
     const room = socket.data.room;
     const r = rooms[room];
     if (!r) return;
-
     const player = r.players.find(p => p.id === socket.id);
     if (!player || !msg) return;
 
     const cleanMsg = msg.trim().toLowerCase();
-
     if (r.word && socket.id !== r.drawerId && !player.guessed) {
       if (cleanMsg === r.word.toLowerCase()) {
         player.guessed = true;
         player.score += 100;
-        io.to(socket.id).emit('systemMessage', `✅ You guessed it! The word was "${r.word}".`);
-        socket.broadcast.to(room).emit('systemMessage', `🎯 ${player.name} guessed the word!`);
-
+        io.to(socket.id).emit("systemMessage", `✅ You guessed it! The word was "${r.word}".`);
+        socket.broadcast.to(room).emit("systemMessage", `🎯 ${player.name} guessed the word!`);
         const allGuessed = r.players.filter(p => p.id !== r.drawerId).every(p => p.guessed);
-        if (allGuessed) {
-          clearInterval(r.timer);
-          endRound(room);
-        }
-        io.to(room).emit('roomState', r);
+        if (allGuessed) endRound(room);
+        io.to(room).emit("roomState", serializeRoomState(r));
         return;
       }
     }
 
-    io.to(room).emit('chat', { name: player.name, message: msg });
+    io.to(room).emit("chat", { name: player.name, message: msg });
   });
 
-  socket.on('chooseWord', ({ word }) => {
-    const room = socket.data.room;
-    const r = rooms[room];
+  socket.on("chooseWord", ({ word }) => {
+    const roomCode = socket.data.room;
+    const room = rooms[roomCode];
+    if (!room || socket.id !== room.drawerId) return;
+    chooseWord(roomCode, word);
+  });
+
+  socket.on("startGame", () => {
+    const room = rooms[socket.data.room];
+    if (!room || socket.id !== room.hostId) return;
+    startRound(socket.data.room);
+  });
+
+  socket.on("updateSettings", (settings) => {
+    const room = rooms[socket.data.room];
+    if (!room || socket.id !== room.hostId) return;
+    Object.assign(room.settings, settings);
+    io.to(socket.data.room).emit("roomState", serializeRoomState(room));
+  });
+
+  socket.on("disconnect", () => {
+    const roomCode = socket.data.room;
+    if (!roomCode) return;
+    const r = rooms[roomCode];
     if (!r) return;
-
-    clearTimeout(r.chooseWordTimeout);
-    r.word = word;
-    io.to(r.drawerId).emit('yourWord', r.word);
-    io.to(room).emit('roundStarted', {
-      drawerId: r.drawerId,
-      drawerName: r.players.find(p => p.id === r.drawerId).name
-    });
-    startRoundTimer(room);
-  });
-
-  socket.on('startGame', () => {
-    const room = socket.data.room;
-    const r = rooms[room];
-    if (!r || r.hostId !== socket.id) return;
-    startRound(room);
-  });
-
-  socket.on('updateSettings', (settings) => {
-    const room = socket.data.room;
-    const r = rooms[room];
-    if (!r || r.hostId !== socket.id) return;
-    Object.assign(r.settings, settings);
-    io.to(room).emit('roomState', r);
-  });
-
-  socket.on('setCustomWords', (words) => {
-    const room = socket.data.room;
-    const r = rooms[room];
-    if (!r || r.hostId !== socket.id) return;
-    r.settings.customWords = words.split(',').map(w => w.trim()).filter(Boolean);
-    io.to(room).emit('roomState', r);
-  });
-
-  socket.on('kickPlayer', ({ playerId }) => {
-    const room = socket.data.room;
-    const r = rooms[room];
-    if (!r || r.hostId !== socket.id) return;
-    const idx = r.players.findIndex(p => p.id === playerId);
-    if (idx >= 0) {
-      io.to(playerId).emit('kicked', { reason: 'Kicked by host' });
-      io.sockets.sockets.get(playerId)?.leave(room);
-      r.players.splice(idx, 1);
-      io.to(room).emit('roomState', r);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const room = socket.data.room;
-    if (!room || !rooms[room]) return;
-    const r = rooms[room];
     r.players = r.players.filter(p => p.id !== socket.id);
-
     if (r.players.length === 0) {
-      clearInterval(r.timer);
-      delete rooms[room];
+      delete rooms[roomCode];
     } else {
-      if (socket.id === r.hostId) {
+      if (r.hostId === socket.id) {
         r.hostId = r.players[0].id;
       }
-      io.to(room).emit('roomState', r);
+      io.to(roomCode).emit("roomState", serializeRoomState(r));
     }
   });
 });
 
-server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
