@@ -300,4 +300,46 @@ io.on("connection", socket => {
         const pick = room.candidateWords[Math.floor(Math.random() * room.candidateWords.length)];
         chooseWord(roomCode, pick);
       }
-      room.pickTimer = nu
+      room.pickTimer = null;
+    }, 30000);
+  }
+
+  function chooseWord(roomCode, word) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    room.currentWord = word;
+    room.timeLeft = room.settings.roundTime;
+
+    const drawerSocket = io.sockets.sockets.get(room.drawerId);
+    if (drawerSocket) {
+      drawerSocket.emit("yourWord", word);
+    }
+
+    io.to(roomCode).emit("roundStarted", {
+      drawerId: room.drawerId,
+      drawerName: room.players.find(p => p.id === room.drawerId)?.name
+    });
+
+    if (room.timerId) {
+      clearInterval(room.timerId);
+      room.timerId = null;
+    }
+
+    room.timerId = setInterval(() => {
+      room.timeLeft--;
+      io.to(roomCode).emit("time", room.timeLeft);
+
+      if (room.timeLeft <= 0) {
+        clearInterval(room.timerId);
+        room.timerId = null;
+        io.to(roomCode).emit("systemMessage", `Round ended! The word was: ${room.currentWord}`);
+        setTimeout(() => startRound(roomCode), 5000);
+      }
+    }, 1000);
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
