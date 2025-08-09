@@ -41,6 +41,7 @@ const loadLastSavedBtn = document.getElementById('loadLastSavedBtn');
 
 const chooseModal = document.getElementById('chooseModal');
 const candidateList = document.getElementById('candidateList');
+const overlay = document.getElementById('modalOverlay');
 
 let myId = null;
 let myName = null;
@@ -56,6 +57,22 @@ let brushSize = 4;
 let brushColor = '#000';
 let isEraser = false;
 
+// === Modal helpers ===
+function showModal(modalEl) {
+  // hide any other modal
+  document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+  overlay.classList.remove('hidden');
+  overlay.classList.add('show');
+  modalEl.classList.remove('hidden');
+  modalEl.classList.add('show');
+}
+function hideModal(modalEl) {
+  modalEl.classList.remove('show');
+  modalEl.classList.add('hidden');
+  overlay.classList.remove('show');
+  overlay.classList.add('hidden');
+}
+
 // === Canvas Resize ===
 function resizeCanvas(){
   const wrap = document.querySelector('.canvasWrap');
@@ -67,7 +84,7 @@ window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 function drawStrokeOnCtx(stroke){
-  if(!stroke?.points?.length) return;
+  if(!stroke || !stroke.points || stroke.points.length === 0) return;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = stroke.color;
@@ -146,22 +163,22 @@ socket.on('replayData', (strokes) => {
   step();
 });
 
-// Load Last Saved Round
+// Load Last Saved Round (uses socket API your server exposes)
 loadLastSavedBtn.addEventListener('click', () => {
   if(!currentRoom) return alert('Not in room');
-  fetch(`/rounds/${currentRoom}/last`).then(r => r.json()).then(j => {
-    if(!j.ok) return alert('No saved round');
-    const strokes = j.round.strokes;
+  socket.emit('requestLastSavedRound', (res) => {
+    if(!res || !res.ok) return alert(res && res.message ? res.message : 'No saved round');
+    const strokes = res.strokes || [];
     ctx.clearRect(0,0,canvas.width,canvas.height);
     let i = 0;
     function step() {
-      if(i >= strokes.length) return;
+      if (i >= strokes.length) return;
       drawStrokeOnCtx(strokes[i]);
       i++;
       setTimeout(step, 150);
     }
     step();
-  }).catch(() => alert('Failed to load'));
+  });
 });
 
 // Toolbar
@@ -178,11 +195,12 @@ function enterRoom(room, name) {
   gameScreen.classList.remove('hidden');
 }
 
+// Create / Join
 createRoomBtn.addEventListener('click', () => {
   const name = nameInput.value.trim() || 'Player';
   const custom = customWordsTextarea.value.trim();
   socket.emit('createRoom', { name, maxRounds: 8, roundTime: 60, customWords: custom }, (res) => {
-    if (res?.ok) enterRoom(res.room, name);
+    if (res && res.ok) enterRoom(res.room, name);
     else alert('Failed to create');
   });
 });
@@ -191,8 +209,8 @@ joinRoomBtn.addEventListener('click', () => {
   const room = roomCodeInput.value.trim().toUpperCase();
   if (!room) return alert('Enter room code');
   socket.emit('joinRoom', { name, room }, (res) => {
-    if (res?.ok) enterRoom(res.room, name);
-    else alert(res?.error || 'Failed to join');
+    if (res && res.ok) enterRoom(res.room, name);
+    else alert(res && res.error ? res.error : 'Failed to join');
   });
 });
 
@@ -237,44 +255,60 @@ socket.on('roomState', (state) => {
   document.getElementById('langCat').textContent = `${state.settings.language}/${state.settings.category}`;
   if (hostId === myId) {
     settingsBtn.classList.remove('hidden');
-    if (state.settings.customWords?.length) {
+    if (state.settings.customWords && state.settings.customWords.length) {
       customWordsTextarea.value = state.settings.customWords.join(', ');
     }
   } else settingsBtn.classList.add('hidden');
 });
 
 // === FIXED: Pick-a-word timeout ===
-let chooseWordTimeout;
+let chooseWordTimeout = null;
+
 socket.on('roundPrestart', (info) => {
   drawerId = info.drawerId;
   localStrokes = [];
   redrawAll();
+
+  // Drawer chooses
   if (drawerId === myId) {
+    // build candidate buttons
     candidateList.innerHTML = '';
-    info.candidateWords.forEach(w => {
+    (info.candidateWords || []).forEach(w => {
       const btn = document.createElement('button');
       btn.textContent = w;
       btn.addEventListener('click', () => {
         clearTimeout(chooseWordTimeout);
+        hideModal(chooseModal);
         socket.emit('chooseWord', { word: w });
-        chooseModal.classList.add('hidden');
       });
       candidateList.appendChild(btn);
     });
-    chooseModal.classList.remove('hidden');
+
+    // show modal (overlay will be shown)
+    showModal(chooseModal);
+
+    // auto-pick timer
+    clearTimeout(chooseWordTimeout);
     chooseWordTimeout = setTimeout(() => {
-      if (!chooseModal.classList.contains('hidden')) {
-        const pick = info.candidateWords[Math.floor(Math.random() * info.candidateWords.length)];
-        socket.emit('chooseWord', { word: pick });
-        chooseModal.classList.add('hidden');
+      if (chooseModal.classList.contains('show') || !chooseModal.classList.contains('hidden')) {
+        const pick = (info.candidateWords || [])[Math.floor(Math.random() * (info.candidateWords || []).length)];
+        if (pick) {
+          socket.emit('chooseWord', { word: pick });
+        }
+        hideModal(chooseModal);
       }
     }, 30000);
+
   } else {
+    // viewers
     wordBox.textContent = `${info.drawerName} is choosing a word...`;
   }
 });
+
+// when round actually starts clear timer & hide modal
 socket.on('roundStarted', (info) => {
   clearTimeout(chooseWordTimeout);
+  hideModal(chooseModal);
   drawerId = info.drawerId;
   localStrokes = [];
   ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -291,8 +325,10 @@ socket.on('kicked', ({ reason }) => { alert('You were kicked: ' + (reason || 'by
 // Controls
 startBtn.addEventListener('click', () => socket.emit('startGame'));
 pauseBtn.addEventListener('click', () => socket.emit('pauseGame'));
-settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
-cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
+
+// Settings modal buttons wired to helpers
+settingsBtn.addEventListener('click', () => showModal(settingsModal));
+cancelSettingsBtn.addEventListener('click', () => hideModal(settingsModal));
 saveSettingsBtn.addEventListener('click', () => {
   socket.emit('updateSettings', {
     roundTime: Number(setRoundTime.value),
@@ -301,8 +337,11 @@ saveSettingsBtn.addEventListener('click', () => {
     category: setCategory.value
   });
   socket.emit('setCustomWords', customWordsTextarea.value.trim());
-  settingsModal.classList.add('hidden');
+  hideModal(settingsModal);
 });
+
+// get socket id
 socket.on('connect', () => { myId = socket.id; });
 
-function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+// helper
+function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
