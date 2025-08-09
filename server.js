@@ -54,78 +54,92 @@ function serializeRoomState(room) {
   };
 }
 
+function generateRoomCode() {
+  let code;
+  do {
+    code = uuidv4().slice(0, 4).toUpperCase();
+  } while (rooms[code]);
+  return code;
+}
+
 io.on("connection", socket => {
-  console.log("New connection", socket.id);
+  console.log("New connection:", socket.id);
 
-  // Choose Word listener (one per socket)
-  socket.on("chooseWord", ({ word }) => {
-    const room = rooms[socket.data.room];
-    if (!room) return;
+  // CREATE ROOM
+  socket.on("createRoom", (data, cb) => {
+    console.log("createRoom event received:", data);
 
-    if (socket.id === room.drawerId) {
-      // We should check if the word is one of the candidate words currently available to the drawer
-      // Since candidateWords is generated per round inside startRound, let's store it in the room
-      if (!room.candidateWords) return;
-
-      if (room.candidateWords.includes(word)) {
-        if (room.pickTimer) {
-          clearTimeout(room.pickTimer);
-          room.pickTimer = null;
-        }
-        chooseWord(room.code, word);
+    try {
+      if (typeof cb !== "function") {
+        console.warn("createRoom callback missing or not a function");
+        return;
       }
+
+      if (!data || !data.name || typeof data.name !== "string" || !data.name.trim()) {
+        return cb({ ok: false, error: "Invalid name" });
+      }
+
+      const roomCode = generateRoomCode();
+
+      rooms[roomCode] = {
+        code: roomCode,
+        hostId: socket.id,
+        players: [{ id: socket.id, name: data.name.trim(), score: 0, guessed: false }],
+        drawerId: null,
+        roundNumber: 0,
+        currentWord: null,
+        strokes: [],
+        timeLeft: 0,
+        settings: {
+          roundTime: data.roundTime || 60,
+          maxRounds: data.maxRounds || 8,
+          language: "english",
+          category: "objects",
+          customWords: data.customWords
+            ? data.customWords.split(",").map(w => w.trim()).filter(Boolean)
+            : []
+        },
+        timerId: null,
+        pickTimer: null,
+        candidateWords: []
+      };
+
+      socket.join(roomCode);
+      socket.data.room = roomCode;
+
+      console.log(`Room ${roomCode} created by ${data.name}`);
+
+      cb({ ok: true, room: roomCode });
+      io.to(roomCode).emit("roomState", serializeRoomState(rooms[roomCode]));
+    } catch (error) {
+      console.error("Error in createRoom handler:", error);
+      if (typeof cb === "function") cb({ ok: false, error: "Internal server error" });
     }
   });
 
-  // Create Room
-  socket.on("createRoom", (data, cb) => {
-    const roomCode = uuidv4().slice(0, 4).toUpperCase();
-    rooms[roomCode] = {
-      code: roomCode,
-      hostId: socket.id,
-      players: [{ id: socket.id, name: data.name, score: 0, guessed: false }],
-      drawerId: null,
-      roundNumber: 0,
-      currentWord: null,
-      strokes: [],
-      timeLeft: 0,
-      settings: {
-        roundTime: data.roundTime || 60,
-        maxRounds: data.maxRounds || 8,
-        language: "english",
-        category: "objects",
-        customWords: data.customWords
-          ? data.customWords.split(",").map(w => w.trim()).filter(Boolean)
-          : []
-      },
-      timerId: null,
-      pickTimer: null,
-      candidateWords: []
-    };
-    socket.join(roomCode);
-    socket.data.room = roomCode;
-    cb({ ok: true, room: roomCode });
-    io.to(roomCode).emit("roomState", serializeRoomState(rooms[roomCode]));
-  });
-
-  // Join Room
+  // JOIN ROOM
   socket.on("joinRoom", (data, cb) => {
     const room = rooms[data.room];
     if (!room) return cb({ ok: false, error: "Room not found" });
 
-    // Prevent duplicate players with same socket.id
+    // Prevent duplicate socket ID
     if (room.players.find(p => p.id === socket.id)) {
       return cb({ ok: false, error: "Already joined" });
     }
 
-    room.players.push({ id: socket.id, name: data.name, score: 0, guessed: false });
+    // Prevent duplicate player names in room
+    if (room.players.find(p => p.name.toLowerCase() === data.name.toLowerCase())) {
+      return cb({ ok: false, error: "Name already taken in room" });
+    }
+
+    room.players.push({ id: socket.id, name: data.name.trim(), score: 0, guessed: false });
     socket.join(data.room);
     socket.data.room = data.room;
     cb({ ok: true, room: data.room });
     io.to(data.room).emit("roomState", serializeRoomState(room));
   });
 
-  // Kick Player
+  // KICK PLAYER
   socket.on("kickPlayer", ({ playerId }) => {
     const room = rooms[socket.data.room];
     if (!room || socket.id !== room.hostId) return;
@@ -137,104 +151,31 @@ io.on("connection", socket => {
     }
   });
 
-  // Start Game
+  // START GAME
   socket.on("startGame", () => {
     const room = rooms[socket.data.room];
     if (!room || socket.id !== room.hostId) return;
     startRound(room.code);
   });
 
-  function startRound(roomCode) {
-    const room = rooms[roomCode];
+  // CHOOSE WORD
+  socket.on("chooseWord", ({ word }) => {
+    const room = rooms[socket.data.room];
     if (!room) return;
 
-    // Clear any existing timers
-    if (room.timerId) {
-      clearInterval(room.timerId);
-      room.timerId = null;
-    }
-    if (room.pickTimer) {
-      clearTimeout(room.pickTimer);
-      room.pickTimer = null;
-    }
-
-    room.roundNumber++;
-    if (room.roundNumber > room.settings.maxRounds) {
-      io.to(roomCode).emit("gameOver", { players: room.players });
-      return;
-    }
-
-    // Pick drawer (0-based indexing)
-    const drawerIndex = (room.roundNumber - 1) % room.players.length;
-    const drawer = room.players[drawerIndex];
-    room.drawerId = drawer.id;
-    room.strokes = [];
-    room.players.forEach(p => (p.guessed = false));
-    room.currentWord = null;
-
-    // Pick candidate words for drawer to choose
-    room.candidateWords = getRandomWords(
-      room.settings.language,
-      room.settings.category,
-      3,
-      room.settings.customWords
-    );
-
-    io.to(roomCode).emit("roomState", serializeRoomState(room));
-    io.to(roomCode).emit("roundPrestart", {
-      drawerId: room.drawerId,
-      drawerName: drawer.name,
-      candidateWords: room.candidateWords
-    });
-
-    // Auto pick a word after 30 seconds if drawer does not choose
-    room.pickTimer = setTimeout(() => {
-      if (!room.currentWord) {
-        const pick = room.candidateWords[Math.floor(Math.random() * room.candidateWords.length)];
-        chooseWord(roomCode, pick);
+    if (socket.id === room.drawerId) {
+      if (!room.candidateWords) return;
+      if (room.candidateWords.includes(word)) {
+        if (room.pickTimer) {
+          clearTimeout(room.pickTimer);
+          room.pickTimer = null;
+        }
+        chooseWord(room.code, word);
       }
-      room.pickTimer = null;
-    }, 30000);
-  }
-
-  function chooseWord(roomCode, word) {
-    const room = rooms[roomCode];
-    if (!room) return;
-
-    room.currentWord = word;
-    room.timeLeft = room.settings.roundTime;
-
-    // Notify drawer their word
-    const drawerSocket = io.sockets.sockets.get(room.drawerId);
-    if (drawerSocket) {
-      drawerSocket.emit("yourWord", word);
     }
+  });
 
-    io.to(roomCode).emit("roundStarted", {
-      drawerId: room.drawerId,
-      drawerName: room.players.find(p => p.id === room.drawerId)?.name
-    });
-
-    // Clear previous timer if any
-    if (room.timerId) {
-      clearInterval(room.timerId);
-      room.timerId = null;
-    }
-
-    room.timerId = setInterval(() => {
-      room.timeLeft--;
-      io.to(roomCode).emit("time", room.timeLeft);
-      if (room.timeLeft <= 0) {
-        clearInterval(room.timerId);
-        room.timerId = null;
-        io.to(roomCode).emit("roundEnded", { word: room.currentWord });
-        room.currentWord = null;
-        setTimeout(() => startRound(roomCode), 3000);
-      }
-    }, 1000);
-  }
-
-  // Chat / Guess
+  // CHAT / GUESS
   socket.on("chat", msg => {
     const room = rooms[socket.data.room];
     if (!room) return;
@@ -245,7 +186,6 @@ io.on("connection", socket => {
     const isDrawer = socket.id === room.drawerId;
     const cleanMsg = msg.trim();
 
-    // Guess check
     if (
       room.currentWord &&
       !isDrawer &&
@@ -259,11 +199,10 @@ io.on("connection", socket => {
       return;
     }
 
-    // Normal chat broadcast
     io.to(room.code).emit("chat", { name: player.name, message: cleanMsg });
   });
 
-  // Drawing events
+  // DRAWING EVENTS
   socket.on("stroke", stroke => {
     const room = rooms[socket.data.room];
     if (!room || socket.id !== room.drawerId) return;
@@ -286,7 +225,7 @@ io.on("connection", socket => {
     socket.emit("replayData", room.strokes || []);
   });
 
-  // Disconnect
+  // DISCONNECT
   socket.on("disconnect", () => {
     const room = rooms[socket.data.room];
     if (!room) return;
@@ -299,7 +238,6 @@ io.on("connection", socket => {
       delete rooms[socket.data.room];
     } else {
       if (wasDrawer) {
-        // Clear timers
         if (room.timerId) {
           clearInterval(room.timerId);
           room.timerId = null;
@@ -315,6 +253,92 @@ io.on("connection", socket => {
       io.to(room.code).emit("roomState", serializeRoomState(room));
     }
   });
+
+  // Helper functions
+
+  function startRound(roomCode) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    if (room.timerId) {
+      clearInterval(room.timerId);
+      room.timerId = null;
+    }
+    if (room.pickTimer) {
+      clearTimeout(room.pickTimer);
+      room.pickTimer = null;
+    }
+
+    room.roundNumber++;
+    if (room.roundNumber > room.settings.maxRounds) {
+      io.to(roomCode).emit("gameOver", { players: room.players });
+      return;
+    }
+
+    const drawerIndex = (room.roundNumber - 1) % room.players.length;
+    const drawer = room.players[drawerIndex];
+    room.drawerId = drawer.id;
+    room.strokes = [];
+    room.players.forEach(p => (p.guessed = false));
+    room.currentWord = null;
+
+    room.candidateWords = getRandomWords(
+      room.settings.language,
+      room.settings.category,
+      3,
+      room.settings.customWords
+    );
+
+    io.to(roomCode).emit("roomState", serializeRoomState(room));
+    io.to(roomCode).emit("roundPrestart", {
+      drawerId: room.drawerId,
+      drawerName: drawer.name,
+      candidateWords: room.candidateWords
+    });
+
+    room.pickTimer = setTimeout(() => {
+      if (!room.currentWord) {
+        const pick = room.candidateWords[Math.floor(Math.random() * room.candidateWords.length)];
+        chooseWord(roomCode, pick);
+      }
+      room.pickTimer = null;
+    }, 30000);
+  }
+
+  function chooseWord(roomCode, word) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    room.currentWord = word;
+    room.timeLeft = room.settings.roundTime;
+
+    const drawerSocket = io.sockets.sockets.get(room.drawerId);
+    if (drawerSocket) {
+      drawerSocket.emit("yourWord", word);
+    }
+
+    io.to(roomCode).emit("roundStarted", {
+      drawerId: room.drawerId,
+      drawerName: room.players.find(p => p.id === room.drawerId)?.name
+    });
+
+    if (room.timerId) {
+      clearInterval(room.timerId);
+      room.timerId = null;
+    }
+
+    room.timerId = setInterval(() => {
+      room.timeLeft--;
+      io.to(roomCode).emit("time", room.timeLeft);
+      if (room.timeLeft <= 0) {
+        clearInterval(room.timerId);
+        room.timerId = null;
+        io.to(roomCode).emit("roundEnded", { word: room.currentWord });
+        room.currentWord = null;
+        setTimeout(() => startRound(roomCode), 3000);
+      }
+    }, 1000);
+  }
 });
 
 server.listen(PORT, () => {
