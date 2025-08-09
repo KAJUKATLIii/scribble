@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <!-- Overlay used for every modal -->
+  <div id="modalOverlay" class="modal-overlay hidden"></div>
+
   <div id="loginScreen" class="centered">
     <h1>Scribble — Full</h1>
 
@@ -80,7 +83,7 @@
   </div>
 
   <!-- Settings modal (host only) -->
-  <div id="settingsModal" class="modal hidden">
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modalCard">
       <h3>Room Settings</h3>
       <div>
@@ -110,19 +113,19 @@
         <label>Custom words (comma separated):</label>
         <textarea id="customWords" placeholder="e.g., mango, laptop, moonlight" rows="3" style="width:100%"></textarea>
       </div>
-      <div style="margin-top:12px">
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:center;">
         <button id="saveSettingsBtn">Save</button>
         <button id="cancelSettingsBtn">Cancel</button>
       </div>
     </div>
   </div>
 
-  <!-- Drawer choose modal -->
-  <div id="chooseModal" class="modal hidden">
+  <!-- Choose word modal -->
+  <div id="chooseModal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modalCard">
       <h3>Pick a word to draw</h3>
       <div id="candidateList" class="candidateList"></div>
-      <div class="muted small">Auto-pick after 30s</div>
+      <div class="muted small" style="margin-top:10px;">Auto-pick after 30s</div>
     </div>
   </div>
 
